@@ -10,7 +10,7 @@ Effortlessly track overtime hours, calculate rates, and generate comprehensive E
 - **💰 Salary & Rates:** Input salary, select overtime rates (x1, x1.5, x2, x3).  
 - **📉 Real-Time Calculations:** Instant display of daily and hourly rates based on the salary.  
 - **📊 Report Generation:** Export detailed reports in Excel format, including hours, tasks, and calculated amounts.
-- **📝 Persistent Data: All data is saved and automatically loaded on the next launch, until manually reset.
+- 📝 Persistent Data: All data is saved and automatically loaded on the next launch, until manually reset.
 
 ---
 
