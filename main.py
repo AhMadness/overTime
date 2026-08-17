@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QPushButton,
-    QDialog, QDateEdit, QTextEdit, QMessageBox, QTableWidget, QTableWidgetItem, QMenu, QLineEdit, QComboBox
+    QDialog, QDateEdit, QTextEdit, QMessageBox, QTableWidget, QTableWidgetItem, QMenu, QLineEdit, QComboBox,
+    QFileDialog
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIntValidator
@@ -11,10 +12,18 @@ import pandas as pd
 import os
 import calendar
 
+from overtime_core import calculate_rates, calculate_summary
 
-# Constants for file paths
-SALARY_FILE = 'salary_data.json'
-OVERTIME_FILE = 'overtime_data.json'
+
+def get_app_directory():
+    """Return the directory used for app data in source and packaged builds."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+SALARY_FILE = os.path.join(get_app_directory(), 'salary_data.json')
+OVERTIME_FILE = os.path.join(get_app_directory(), 'overtime_data.json')
 
 class OvertimeTrackerApp(QWidget):
     def __init__(self):
@@ -97,7 +106,7 @@ class OvertimeTrackerApp(QWidget):
         layout.addWidget(generate_report_button)
 
         # Show Overtime Entries Table Button
-        self.show_entries_button = QPushButton('▼ Show Overtime Entries')
+        self.show_entries_button = QPushButton('Show Overtime Entries')
         self.show_entries_button.clicked.connect(self.toggle_overtime_table)
         layout.addWidget(self.show_entries_button)
 
@@ -161,9 +170,7 @@ class OvertimeTrackerApp(QWidget):
         # Get the number of days in the current month
         days_in_month = calendar.monthrange(current_year, current_month)[1]
 
-        # Calculate daily and hourly rates
-        daily_rate = salary / days_in_month
-        hourly_rate = daily_rate / 8
+        daily_rate, hourly_rate = calculate_rates(salary, days_in_month)
 
         # Update labels
         self.daily_rate_label.setText(f'Daily Rate: {daily_rate:.2f}')
@@ -178,16 +185,13 @@ class OvertimeTrackerApp(QWidget):
         return float(multiplier_str)
 
     def update_info_label(self):
-        # Calculate total hours, days, and amount
-        total_hours = sum(entry['hours'] for entry in self.overtime_entries)
         salary = float(self.salary_input.text() or 0)
         now = datetime.now()
         days_in_month = calendar.monthrange(now.year, now.month)[1]
-        daily_rate = salary / days_in_month
-        hourly_rate = daily_rate / 8
         overtime_multiplier = self.get_overtime_multiplier()
-        total_days = total_hours / 8
-        total_amount = total_hours * hourly_rate * overtime_multiplier
+        total_hours, total_days, total_amount = calculate_summary(
+            self.overtime_entries, salary, days_in_month, overtime_multiplier
+        )
 
         # Update the info label
         self.info_label.setText(f'Hours = {total_hours}  |  Days: {total_days:.2f}  |  Amount = {total_amount:.2f}')
@@ -205,12 +209,12 @@ class OvertimeTrackerApp(QWidget):
             # Hide the table and reset its height to zero
             self.overtime_table.setVisible(False)
             self.overtime_table.setFixedHeight(0)  # Set height to 0 to shrink the layout
-            self.show_entries_button.setText('▼ Show Overtime Entries')
+            self.show_entries_button.setText('Show Overtime Entries')
         else:
             # Show the table and set a fixed height to expand
             self.overtime_table.setVisible(True)
             self.overtime_table.setFixedHeight(200)  # Adjust the height as needed
-            self.show_entries_button.setText('▲ Hide Overtime Entries')
+            self.show_entries_button.setText('Hide Overtime Entries')
         self.adjustSize()  # Adjust the size of the window
 
     def handle_cell_changed(self, row, column):
@@ -238,13 +242,13 @@ class OvertimeTrackerApp(QWidget):
             # save and refresh
             self.save_overtime_entries()
             self.update_info_label()
-            self.update_overtime_table()  # ← add this line
+            self.update_overtime_table()
 
         except (ValueError, AttributeError):
             QMessageBox.warning(self, 'Invalid Input',
-                                'Please enter:\n• a positive number for Hours\n'
-                                '• a valid date DD-MM-YYYY for Date\n'
-                                '• non-empty text for Task')
+                                'Please enter:\n- a positive number for Hours\n'
+                                '- a valid date DD-MM-YYYY for Date\n'
+                                '- non-empty text for Task')
             self.update_overtime_table()  # revert to previous values
 
     def show_context_menu(self, position):
@@ -284,7 +288,7 @@ class OvertimeTrackerApp(QWidget):
     # Replace the existing update_overtime_table() method with this updated version
     def update_overtime_table(self):
         """Update the table widget and refresh other related information."""
-        self.overtime_entries.sort(key=lambda e: datetime.strptime(e['date'], '%d-%m-%Y'))  # ← add this
+        self.overtime_entries.sort(key=lambda e: datetime.strptime(e['date'], '%d-%m-%Y'))
         self.overtime_table.blockSignals(True)  # Block signals to prevent recursive updates
         self.overtime_table.setRowCount(len(self.overtime_entries))
         for row, entry in enumerate(self.overtime_entries):
@@ -312,7 +316,7 @@ class OvertimeTrackerApp(QWidget):
             salary = float(self.salary_input.text() or 0)
             now = datetime.now()
             days_in_month = calendar.monthrange(now.year, now.month)[1]
-            hourly_rate = (salary / days_in_month) / 8
+            overtime_multiplier = self.get_overtime_multiplier()
 
             # Create a DataFrame with the overtime entries
             report_data = pd.DataFrame(self.overtime_entries)
@@ -322,24 +326,31 @@ class OvertimeTrackerApp(QWidget):
                 QMessageBox.information(self, 'No Data', 'There are no overtime entries to generate a report.')
                 return
 
-            # Convert the 'date' column to day-month-year format
-            report_data['date'] = pd.to_datetime(report_data['date'], dayfirst=True).dt.strftime('%d-%m-%Y')
+            # Sort chronologically before formatting dates for the workbook.
+            report_data['date'] = pd.to_datetime(report_data['date'], dayfirst=True)
             report_data.sort_values('date', inplace=True, ignore_index=True)
+            report_data['date'] = report_data['date'].dt.strftime('%d-%m-%Y')
 
             # Compute the total hours, days, and amount
-            total_hours = report_data['hours'].sum()
-            total_days = total_hours / 8
-            total_amount = total_hours * hourly_rate
-
-            # Define the filename with the desired day-month-year format
-            # Save to specified directory "D:\This PC\Work\nvs\Overtime"
-            # file_name = f"D:\\This PC\\Work\\nvs\\Overtime\\overtime-report-{datetime.now().strftime('%d-%m-%Y')}.xlsx"
-            report_dir = r"D:\Folder\Work\nvs\Overtime"
-            os.makedirs(report_dir, exist_ok=True)  # create folder if it doesn’t exist
-            file_name = os.path.join(
-                report_dir,
-                f"overtime-report-{datetime.now().strftime('%d-%m-%Y')}.xlsx"
+            total_hours, total_days, total_amount = calculate_summary(
+                self.overtime_entries, salary, days_in_month, overtime_multiplier
             )
+
+            default_name = os.path.join(
+                os.path.expanduser('~'),
+                'Documents',
+                f"overtime-report-{datetime.now().strftime('%d-%m-%Y')}.xlsx",
+            )
+            file_name, _ = QFileDialog.getSaveFileName(
+                self,
+                'Save Overtime Report',
+                default_name,
+                'Excel Workbook (*.xlsx)',
+            )
+            if not file_name:
+                return
+            if not file_name.lower().endswith('.xlsx'):
+                file_name += '.xlsx'
 
             # Use pandas to create a basic Excel file first
             with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
@@ -347,7 +358,6 @@ class OvertimeTrackerApp(QWidget):
                 report_data[['date', 'hours', 'task']].to_excel(writer, index=False, startrow=1, header=False)
 
                 # Access the workbook and sheet
-                workbook = writer.book
                 sheet = writer.sheets['Sheet1']
 
                 # Set header titles manually
@@ -401,11 +411,9 @@ class OvertimeTrackerApp(QWidget):
     def get_data_file_path(self, filename):
         """ Helper method to get the correct file path for data files, compatible with PyInstaller """
         try:
-            if getattr(sys, 'frozen', False):  # Check if running as a PyInstaller executable
-                base_path = os.path.dirname(sys.executable)  # Directory of the executable
-            else:
-                base_path = os.path.dirname(os.path.abspath(__file__))  # Directory of the script
-            return os.path.join(base_path, filename)
+            if os.path.isabs(filename):
+                return filename
+            return os.path.join(get_app_directory(), filename)
 
         except Exception as e:
             QMessageBox.critical(self, 'Error', f'Failed to get file path: {str(e)}')
